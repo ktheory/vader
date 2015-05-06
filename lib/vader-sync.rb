@@ -41,6 +41,7 @@ class VaderSync
       sleep 2
     end
 
+
     # Initialize boot2docker for vader
     cmds = [
       'tce-load -wi rsync', # Install rsync
@@ -55,6 +56,7 @@ class VaderSync
     cmds = cmds.join(' && ')
 
     puts "Running #{cmds}" if verbose?
+    # FIXME - use raw ssh to avoid duping options
     `boot2docker ssh "#{cmds}"`
     unless $?.success?
       puts "Error initalizing boot2docker for vader"
@@ -64,13 +66,15 @@ class VaderSync
     # Watch for fs changes
     puts "Watching #{local_watch_paths.inspect} + #{CONFIG_DIR}" if verbose?
     fsevent = FSEvent.new
-    fsevent.watch local_watch_paths + [CONFIG_DIR], latency: SYNC_LATENCY do |path|
+    fsevent.watch local_watch_paths + [CONFIG_DIR], latency: SYNC_LATENCY do |paths|
       handle_fs_event(paths)
     end
     fsevent.run
   end
 
   def handle_fs_event(full_paths)
+    puts "handling event for #{full_paths.inspect}" if verbose?
+
     # full_paths is potentially large, so try to iterated efficiently
     matched_paths = []
     full_paths.each do |full_path|
@@ -80,8 +84,8 @@ class VaderSync
       matched_path = local_watch_paths.detect{|p| full_path.start_with?(p) }
       matched_paths << matched_path  if matched_path
 
-      if full_path == CONFIG_DIR
-        puts "Vader config change detected. Restarting"
+      if full_path.start_with? CONFIG_DIR
+        puts "Vader config change detected, restarting."
         exit 0
       end
     end
@@ -91,14 +95,48 @@ class VaderSync
 
   def sync(path)
     puts "Syncing #{path}"
-    return 1
+    exclude_path = File.join(path, '.vader-excludes')
+
+    rsync_options = [
+      '-av',
+      '--delete',
+     '-e ssh -i ~/.ssh/id_boot2docker -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no']
+
+     if File.exists?(exclude_path)
+       rsync_options << "--exclude-from #{exclude_path}"
+     end
+
+     rsync_options <<
+     process.cwd() + '/',
+                            '--exclude-from',
+                                 nconf.get('ignoreFile'),
+                                      'docker@' + docker_ip + ':' + nconf.get('targetPath'
     pid = spawn(rsync_cmd)
 
     Process.wait(pid)
+    unless $?.success?
+      puts "Error syncing #{path}, restarting."
+      exit 1
+    end
   end
 
   def verbose?
     ENV['VADER_VERBOSE']
+  end
+
+  def boot2docker_config
+    @boot2docker_config ||= `boot2docker config`.split("\n").inject({}) {|hash, line|
+      match = line.match(/(?<key>\S+)\s=\s"?(?<value>[^\s"]+)"?/)
+      if match
+        hash.merge(match[:key] => match[:value])
+      else
+        hash
+      end
+    }
+  end
+
+  def boot2docker_ssh_options
+    "-i #{boot2docker_config['SSHKey']} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
   end
 end
 
