@@ -1,0 +1,10 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    rb-fsevent (0.9.4)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  rb-fsevent (~> 0.9.4)
